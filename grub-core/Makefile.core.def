@@ -215,6 +215,7 @@ kernel = {
   i386_efi = kern/i386/tsc_pmtimer.c;
   i386_coreboot = kern/i386/tsc_pmtimer.c;
   x86_64_efi = kern/i386/tsc_pmtimer.c;
+  x86 = lib/fdt.c;
 
   i386_efi = kern/i386/efi/init.c;
   i386_efi = bus/pci.c;

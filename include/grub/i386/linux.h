@@ -82,6 +82,14 @@ struct grub_e820_mmap
   grub_uint32_t type;
 } GRUB_PACKED;
 
+struct linux_kernel_setup_data {
+  grub_uint64_t next;
+  grub_uint32_t type;
+#define LINUX_SETUP_DTB 0x02
+  grub_uint32_t len;
+  grub_uint8_t data[0];
+} GRUB_PACKED;
+
 enum
   {
     GRUB_VIDEO_LINUX_TYPE_TEXT = 0x01,

@@ -36,6 +36,7 @@
 #include <grub/lib/cmdline.h>
 #include <grub/linux.h>
 #include <grub/machine/kernel.h>
+#include <grub/fdt.h>
 
 GRUB_MOD_LICENSE ("GPLv3+");
 
@@ -75,6 +76,7 @@ static void *efi_mmap_buf;
 static grub_size_t maximal_cmdline_size;
 static struct linux_kernel_params linux_params;
 static char *linux_cmdline;
+static const void *current_fdt;
 #ifdef GRUB_MACHINE_EFI
 static grub_efi_uintn_t efi_mmap_size;
 #else
@@ -410,6 +412,7 @@ grub_linux_boot (void)
   };
   grub_size_t mmap_size;
   grub_size_t cl_offset;
+  grub_size_t fdt_data_size = 0;
 
 #ifdef GRUB_MACHINE_IEEE1275
   {
@@ -513,13 +516,17 @@ grub_linux_boot (void)
   linux_params.acpi_rsdp_addr = grub_le_to_cpu64 (grub_rsdp_addr);
 #endif
 
+  if (current_fdt)
+    fdt_data_size = grub_fdt_get_totalsize(current_fdt) +
+                    sizeof(struct linux_kernel_setup_data) + 16;
+
   mmap_size = find_mmap_size ();
   /* Make sure that each size is aligned to a page boundary.  */
   cl_offset = ALIGN_UP (mmap_size + sizeof (linux_params), 4096);
   if (cl_offset < ((grub_size_t) linux_params.setup_sects << GRUB_DISK_SECTOR_BITS))
     cl_offset = ALIGN_UP ((grub_size_t) (linux_params.setup_sects
 					 << GRUB_DISK_SECTOR_BITS), 4096);
-  ctx.real_size = ALIGN_UP (cl_offset + maximal_cmdline_size, 4096);
+  ctx.real_size = ALIGN_UP (cl_offset + maximal_cmdline_size + fdt_data_size, 4096);
 
 #ifdef GRUB_MACHINE_EFI
   efi_mmap_size = grub_efi_find_mmap_size ();
@@ -565,6 +572,20 @@ grub_linux_boot (void)
   ctx.params->cmd_line_ptr = ctx.real_mode_target + cl_offset;
   grub_memcpy ((char *) ctx.params + cl_offset, linux_cmdline,
 	       maximal_cmdline_size);
+
+  if (current_fdt)
+  {
+    struct linux_kernel_setup_data *fdt_data;
+    grub_size_t fdt_data_offset;
+    fdt_data_offset = ALIGN_UP (cl_offset + maximal_cmdline_size, 16);
+    ctx.params->setup_data = ctx.real_mode_target + fdt_data_offset;
+    fdt_data = (struct linux_kernel_setup_data *) ((char *) ctx.params +
+						    fdt_data_offset);
+    fdt_data->next = 0;
+    fdt_data->type = LINUX_SETUP_DTB;
+    fdt_data->len = grub_fdt_get_totalsize (current_fdt);
+    grub_memcpy (fdt_data->data, current_fdt, fdt_data->len);
+  }
 
   grub_dprintf ("linux", "code32_start = %x\n",
 		(unsigned) ctx.params->code32_start);
@@ -1117,7 +1138,55 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   return grub_errno;
 }
 
-static grub_command_t cmd_linux, cmd_initrd;
+static grub_err_t
+load_dtb (grub_file_t dtb, int size)
+{
+  void *new_fdt;
+
+  new_fdt = grub_zalloc (size);
+  if (!new_fdt)
+    return grub_errno;
+
+  grub_dprintf ("loader", "Loading device tree to %p\n",
+		new_fdt);
+  if ((grub_file_read (dtb, new_fdt, size) != size)
+      || (grub_fdt_check_header (new_fdt, size) != 0))
+    {
+      grub_free (new_fdt);
+      return grub_error (GRUB_ERR_BAD_OS, N_("invalid device tree"));
+    }
+
+  grub_fdt_set_totalsize (new_fdt, size);
+  current_fdt = new_fdt;
+
+  return GRUB_ERR_NONE;
+}
+
+static grub_err_t
+grub_cmd_devicetree (grub_command_t cmd __attribute__ ((unused)),
+		     int argc, char *argv[])
+{
+  grub_file_t dtb;
+  int size;
+
+  if (argc != 1)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("filename expected"));
+
+  dtb = grub_file_open (argv[0], GRUB_FILE_TYPE_DEVICE_TREE_IMAGE);
+  if (!dtb)
+    return grub_errno;
+
+  size = grub_file_size (dtb);
+  if (size == 0)
+    grub_error (GRUB_ERR_BAD_OS, "empty file");
+  else
+    load_dtb (dtb, size);
+  grub_file_close (dtb);
+
+  return grub_errno;
+}
+
+static grub_command_t cmd_linux, cmd_initrd, cmd_devicetree;
 
 GRUB_MOD_INIT(linux)
 {
@@ -1125,6 +1194,8 @@ GRUB_MOD_INIT(linux)
 				     0, N_("Load Linux."));
   cmd_initrd = grub_register_command ("initrd", grub_cmd_initrd,
 				      0, N_("Load initrd."));
+  cmd_devicetree = grub_register_command ("devicetree", grub_cmd_devicetree,
+					  0, N_("Load DTB file."));
   my_mod = mod;
 }
 
@@ -1132,4 +1203,5 @@ GRUB_MOD_FINI(linux)
 {
   grub_unregister_command (cmd_linux);
   grub_unregister_command (cmd_initrd);
+  grub_unregister_command (cmd_devicetree);
 }
