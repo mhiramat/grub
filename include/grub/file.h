@@ -100,6 +100,8 @@ enum grub_file_type
     GRUB_FILE_TYPE_ACPI_TABLE,
     /* File holding Device Tree.  */
     GRUB_FILE_TYPE_DEVICE_TREE_IMAGE,
+    /* File holding Structured Kernel Cmdline.  */
+    GRUB_FILE_TYPE_SKC,
     /* File we intend show to user.  */
     GRUB_FILE_TYPE_CAT,
     GRUB_FILE_TYPE_HEXCAT,

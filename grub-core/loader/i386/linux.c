@@ -75,6 +75,7 @@ static void *efi_mmap_buf;
 static grub_size_t maximal_cmdline_size;
 static struct linux_kernel_params linux_params;
 static char *linux_cmdline;
+static char *linux_skc;
 #ifdef GRUB_MACHINE_EFI
 static grub_efi_uintn_t efi_mmap_size;
 #else
@@ -410,6 +411,7 @@ grub_linux_boot (void)
   };
   grub_size_t mmap_size;
   grub_size_t cl_offset;
+  grub_size_t skc_data_size = 0;
 
 #ifdef GRUB_MACHINE_IEEE1275
   {
@@ -513,13 +515,16 @@ grub_linux_boot (void)
   linux_params.acpi_rsdp_addr = grub_le_to_cpu64 (grub_rsdp_addr);
 #endif
 
+  if (linux_skc)
+    skc_data_size = grub_strlen(linux_skc) + 1;
+
   mmap_size = find_mmap_size ();
   /* Make sure that each size is aligned to a page boundary.  */
   cl_offset = ALIGN_UP (mmap_size + sizeof (linux_params), 4096);
   if (cl_offset < ((grub_size_t) linux_params.setup_sects << GRUB_DISK_SECTOR_BITS))
     cl_offset = ALIGN_UP ((grub_size_t) (linux_params.setup_sects
 					 << GRUB_DISK_SECTOR_BITS), 4096);
-  ctx.real_size = ALIGN_UP (cl_offset + maximal_cmdline_size, 4096);
+  ctx.real_size = ALIGN_UP (cl_offset + maximal_cmdline_size + skc_data_size, 4096);
 
 #ifdef GRUB_MACHINE_EFI
   efi_mmap_size = grub_efi_find_mmap_size ();
@@ -565,6 +570,21 @@ grub_linux_boot (void)
   ctx.params->cmd_line_ptr = ctx.real_mode_target + cl_offset;
   grub_memcpy ((char *) ctx.params + cl_offset, linux_cmdline,
 	       maximal_cmdline_size);
+
+  if (linux_skc)
+    {
+      int cmdline_len;
+      grub_size_t skc_data_offset;
+
+      skc_data_offset = ALIGN_UP (cl_offset + maximal_cmdline_size, 16);
+      grub_memcpy ((char *) ctx.params + skc_data_offset, linux_skc,
+		   skc_data_size);
+
+      cmdline_len = grub_strlen(linux_cmdline);
+      grub_snprintf((char *) ctx.params + cl_offset + cmdline_len,
+                    maximal_cmdline_size - cmdline_len, " skc=0x%x,%d",
+                    ctx.real_mode_target + skc_data_offset, skc_data_size);
+    }
 
   grub_dprintf ("linux", "code32_start = %x\n",
 		(unsigned) ctx.params->code32_start);
@@ -1117,7 +1137,50 @@ grub_cmd_initrd (grub_command_t cmd __attribute__ ((unused)),
   return grub_errno;
 }
 
-static grub_command_t cmd_linux, cmd_initrd;
+static grub_err_t
+grub_cmd_skc (grub_command_t cmd __attribute__ ((unused)),
+              int argc, char *argv[])
+{
+  grub_file_t skc;
+  int size;
+  void *new_skc;
+
+  if (argc != 1)
+    return grub_error (GRUB_ERR_BAD_ARGUMENT, N_("filename expected"));
+
+  skc = grub_file_open (argv[0], GRUB_FILE_TYPE_SKC);
+  if (!skc)
+    return grub_errno;
+
+  size = grub_file_size (skc);
+  if (size == 0) {
+    grub_error (GRUB_ERR_BAD_OS, "empty file");
+    goto out;
+  }
+
+  new_skc = grub_zalloc (size);
+  if (!new_skc)
+    goto out;
+
+  grub_dprintf ("loader", "Loading SKC to %p\n", new_skc);
+  if (grub_file_read (skc, new_skc, size) != size)
+    {
+      grub_free (new_skc);
+      grub_error (GRUB_ERR_BAD_OS, N_("invalid SKC"));
+      goto out;
+    }
+
+  if (linux_skc)
+    grub_free(linux_skc);
+  linux_skc = new_skc;
+
+out:
+  grub_file_close (skc);
+
+  return grub_errno;
+}
+
+static grub_command_t cmd_linux, cmd_initrd, cmd_skc;
 
 GRUB_MOD_INIT(linux)
 {
@@ -1125,6 +1188,8 @@ GRUB_MOD_INIT(linux)
 				     0, N_("Load Linux."));
   cmd_initrd = grub_register_command ("initrd", grub_cmd_initrd,
 				      0, N_("Load initrd."));
+  cmd_skc = grub_register_command ("skc", grub_cmd_skc,
+				      0, N_("Load SKC."));
   my_mod = mod;
 }
 
@@ -1132,4 +1197,5 @@ GRUB_MOD_FINI(linux)
 {
   grub_unregister_command (cmd_linux);
   grub_unregister_command (cmd_initrd);
+  grub_unregister_command (cmd_skc);
 }
